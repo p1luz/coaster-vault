@@ -1,0 +1,78 @@
+name: coaster-vault
+services:
+  db:
+    image: pgvector/pgvector:0.8.0-pg17
+    ports:
+     - 15432:5432
+    environment:
+      POSTGRES_DB: coasters
+      POSTGRES_USER: coasters
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Run start.ps1 or start.sh first}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U coasters -d coasters']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+  vision:
+    build: ./vision
+    environment:
+      HF_HOME: /models
+      MEDIA_ROOT: /media
+      OMP_NUM_THREADS: '2'
+      TOKENIZERS_PARALLELISM: 'false'
+    volumes:
+      - models:/models
+      - media:/media:ro
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 15s
+      timeout: 10s
+      start_period: 15m
+      retries: 20
+    restart: unless-stopped
+  api:
+    build: ./api
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Db: Host=db;Database=coasters;Username=coasters;Password=${DB_PASSWORD}
+      APP_PASSWORD: ${APP_PASSWORD:?Run start.ps1 or start.sh first}
+      VISION_URL: http://vision:8000
+      MEDIA_ROOT: /media
+      KEYS_ROOT: /keys
+      SECURE_COOKIE: ${SECURE_COOKIE:-false}
+    volumes:
+      - media:/media
+      - keys:/keys
+    healthcheck:
+      test: [CMD, dotnet, CoasterVault.Api.dll, --healthcheck]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 10
+    depends_on:
+      db:
+        condition: service_healthy
+      vision:
+        condition: service_healthy
+    restart: unless-stopped
+  web:
+    build: ./web
+    ports:
+      - '${BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:80'
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1/']
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+volumes:
+  postgres:
+  media:
+  models:
+  keys:
